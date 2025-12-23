@@ -1,0 +1,164 @@
+
+-- ==========================================
+-- QUICK SWAP - NİHAİ HATASIZ SQL ŞEMASI (V7)
+-- ==========================================
+
+-- 1. KULLANICILAR TABLOSU
+CREATE TABLE IF NOT EXISTS public.users (
+  id UUID REFERENCES auth.users NOT NULL PRIMARY KEY,
+  name TEXT,
+  email TEXT,
+  username TEXT,
+  role TEXT DEFAULT 'user',
+  balance DECIMAL DEFAULT 0,
+  avatar_url TEXT,
+  bio TEXT,
+  gender TEXT DEFAULT 'none',
+  birth_date DATE,
+  join_date BIGINT,
+  is_verified BOOLEAN DEFAULT false,
+  total_sales INTEGER DEFAULT 0,
+  followers_count INTEGER DEFAULT 0
+);
+
+-- 2. İLANLAR TABLOSU
+CREATE TABLE IF NOT EXISTS public.listings (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  price DECIMAL NOT NULL,
+  category TEXT,
+  sub_category TEXT,
+  brand TEXT,
+  condition TEXT,
+  type TEXT DEFAULT 'REGULAR',
+  status TEXT DEFAULT 'PENDING_REVIEW',
+  image_urls TEXT[],
+  seller_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
+  created_at BIGINT,
+  updated_at BIGINT,
+  visual_analysis JSONB,
+  boosted_until BIGINT,
+  offer_amount DECIMAL
+);
+
+-- 3. SİPARİŞLER TABLOSU
+CREATE TABLE IF NOT EXISTS public.orders (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  listing_id UUID REFERENCES public.listings(id) ON DELETE SET NULL,
+  buyer_id UUID REFERENCES public.users(id),
+  seller_id UUID REFERENCES public.users(id),
+  status TEXT DEFAULT 'PREPARING',
+  price DECIMAL NOT NULL,
+  shipping_info JSONB,
+  is_system_cancelled BOOLEAN DEFAULT false,
+  created_at BIGINT
+);
+
+-- 4. MESAJLAR TABLOSU
+CREATE TABLE IF NOT EXISTS public.chat_messages (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  sender_id UUID REFERENCES public.users(id),
+  receiver_id UUID REFERENCES public.users(id),
+  listing_id UUID REFERENCES public.listings(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  timestamp BIGINT
+);
+
+-- 5. BİLDİRİMLER TABLOSU (YENİ)
+CREATE TABLE IF NOT EXISTS public.notifications (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  priority TEXT DEFAULT 'low',
+  title TEXT NOT NULL,
+  message TEXT,
+  sender JSONB,
+  related_content JSONB,
+  read BOOLEAN DEFAULT false,
+  pinned BOOLEAN DEFAULT false,
+  timestamp BIGINT
+);
+
+-- 6. OTOMATİK PROFİL OLUŞTURUCU
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger AS $$
+DECLARE
+  default_name TEXT;
+BEGIN
+  default_name := split_part(new.email, '@', 1);
+  INSERT INTO public.users (id, name, email, join_date, username, avatar_url)
+  VALUES (
+    new.id, 
+    COALESCE(new.raw_user_meta_data->>'full_name', default_name), 
+    new.email, 
+    extract(epoch from now())::bigint * 1000, 
+    default_name,
+    'https://ui-avatars.com/api/?background=C36B4F&color=fff&name=' || COALESCE(new.raw_user_meta_data->>'full_name', default_name)
+  );
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- 7. RLS GÜVENLİK POLİTİKALARI
+
+-- Listings Politikaları
+ALTER TABLE public.listings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Listings Access" ON public.listings;
+DROP POLICY IF EXISTS "Users Manage Own Listings" ON public.listings;
+DROP POLICY IF EXISTS "Admins Manage All Listings" ON public.listings;
+
+CREATE POLICY "Public Listings Access" ON public.listings FOR SELECT USING (true);
+CREATE POLICY "Users Manage Own Listings" ON public.listings FOR ALL USING (auth.uid() = seller_id);
+CREATE POLICY "Admins Manage All Listings" ON public.listings FOR ALL TO authenticated 
+USING ( (SELECT role FROM public.users WHERE id = auth.uid()) = 'admin' );
+
+-- Users Politikaları
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Users Access" ON public.users;
+DROP POLICY IF EXISTS "Users Update Own" ON public.users;
+DROP POLICY IF EXISTS "Admins Update Users" ON public.users;
+DROP POLICY IF EXISTS "Admins Delete Users" ON public.users;
+
+CREATE POLICY "Public Users Access" ON public.users FOR SELECT USING (true);
+CREATE POLICY "Users Update Own" ON public.users FOR UPDATE USING (auth.uid() = id);
+CREATE POLICY "Admins Update Users" ON public.users FOR UPDATE USING ( (SELECT role FROM public.users WHERE id = auth.uid()) = 'admin' );
+CREATE POLICY "Admins Delete Users" ON public.users FOR DELETE USING ( (SELECT role FROM public.users WHERE id = auth.uid()) = 'admin' );
+
+-- Chat Messages Politikaları
+ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users view own messages" ON public.chat_messages;
+DROP POLICY IF EXISTS "Users insert messages" ON public.chat_messages;
+
+CREATE POLICY "Users view own messages" ON public.chat_messages 
+FOR SELECT USING (auth.uid() = sender_id OR auth.uid() = receiver_id);
+CREATE POLICY "Users insert messages" ON public.chat_messages 
+FOR INSERT WITH CHECK (auth.uid() = sender_id);
+
+-- Notifications Politikaları (YENİ)
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users view own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Users update own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Users delete own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Authenticated users insert notifications" ON public.notifications;
+
+CREATE POLICY "Users view own notifications" ON public.notifications FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users update own notifications" ON public.notifications FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY "Users delete own notifications" ON public.notifications FOR DELETE USING (auth.uid() = user_id);
+CREATE POLICY "Authenticated users insert notifications" ON public.notifications FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+
+-- 8. ADMİN ATAMASI
+-- Kendi email adresinizle güncelleyin:
+UPDATE public.users SET role = 'admin' WHERE email = 'mert.akmut44@gmail.com';
+
+-- 9. STORAGE (DEPOLAMA)
+INSERT INTO storage.buckets (id, name, public) VALUES ('marketplace_assets', 'marketplace_assets', true) ON CONFLICT (id) DO NOTHING;
+DROP POLICY IF EXISTS "Public Access" ON storage.objects;
+CREATE POLICY "Public Access" ON storage.objects FOR SELECT USING ( bucket_id = 'marketplace_assets' );
+DROP POLICY IF EXISTS "Authenticated Upload" ON storage.objects;
+CREATE POLICY "Authenticated Upload" ON storage.objects FOR INSERT WITH CHECK ( bucket_id = 'marketplace_assets' AND auth.role() = 'authenticated' );

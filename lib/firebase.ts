@@ -1,0 +1,1 @@
+// Firebase kullanımı iptal edildi, Supabase'e geçildi.

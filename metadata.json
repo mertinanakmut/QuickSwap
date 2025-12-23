@@ -1,0 +1,7 @@
+{
+  "name": "Copy of QuickSwap Marketplace",
+  "description": "A local-first P2P marketplace featuring an 'Emergency Cash' option for instant liquidity, powered by Gemini AI.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
